@@ -1,0 +1,255 @@
+---
+title: "NYC Shooting Data"
+author: "T. Foss"
+date: "2025-05-07"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+**Introduction, Goals**
+
+As someone with a personal connection to New York City, being presented with a crime data set immediately brings to mind the city's history of racial profiling by police officers, so called "stop-and-frisk" practices and an age-old distrust of police by racial minorities.  Is there a way of approaching the shooting data in a way that forgoes use of demographic data? I grant that the answer to this question is likely beyond the scope of this assignment and my current acumen, but we'll at least begin the process here.   
+
+**Step One: Import R Libraries**
+
+Import packages for data cleaning and analysis.  
+
+```{r}
+library(tidyverse)
+library(tibble)
+library(dplyr)
+library(lubridate)
+library(knitr)
+library(forcats)
+library(stringr)
+library(purrr)
+library(readr)
+library(ggplot2)
+
+```
+
+**Step Two: Importing, Cleaning and Wrangling NYC Shooting Data**
+
+After importing the historical shooting data from the NYC website, we create a dataframe ("nyc_shootings") and run a summary to determine the specific aspects of the data.
+
+```{r echo=TRUE}
+url_in <- ("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD") #Import NYC shooting data
+nyc_shootings <- read.csv(url_in) #create dataframe
+
+```
+While obviously useful, location data (i.e. longitude, latitude, et al.) feels well beyond my current ability to implement in any meaningful way.  To this extent, these columns will be removed. 
+
+We search the data for NA values as follows.
+
+```{r}
+na_totals <- colSums(is.na(nyc_shootings))
+na_totals 
+```
+Similarly, we search for blanks.
+
+```{r}
+blanks <- colSums(nyc_shootings =="")
+blanks
+```
+While bucketing common sites of shootings could be an interesting path, the columns for LOC_OF_OCCUR_DESC, LOC_CLASSIFCTN_DESC and LOCATION_DESC contain too many blank values, to which extent these variables will also be removed. 
+```{r echo=TRUE}
+nyc_edit <- nyc_shootings %>%
+  select(-c("INCIDENT_KEY", "LOC_OF_OCCUR_DESC", "JURISDICTION_CODE", "LOC_CLASSFCTN_DESC", "INCIDENT_KEY", "X_COORD_CD", "Y_COORD_CD",
+            "Latitude", "Longitude", "Lon_Lat")) %>%
+         mutate(OCCUR_DATE = mdy(OCCUR_DATE))
+```
+
+**Adding Population Data**
+
+At this point, the addition of a population variable seemed essential to assessing the rate of murder while foregoing the demographic information included in the data set.  I found a population data set provided by the City of New York, though included population information by decade only and hence required extensive wrangling as below.  
+
+```{r}
+#Obtained population data 
+
+"https://data.cityofnewyork.us/City-Government/New-York-City-Population-by-Borough-1950-2040/xywu-7bv9/about_data"
+
+#Read in data, inspect.
+pop_data <- read_csv("/Users/tfoss/Downloads/New_York_City_Population_by_Borough__1950_-_2040.csv")
+```
+Selected approximate period that suits the NYC shooting data set, pivoted data so that it's roughly oriented to shooting data. Removed "NYC_Total" rows showing citywide totals, retitled columns as Year and Population. 
+
+```{r}
+pop_edit <- pop_data %>%
+  select(Borough, '2000', '2010', '2020','2030') %>%
+  pivot_longer(cols = c('2000':'2030')) %>%
+  slice(-1:-4) %>%
+  rename(Year = name, Population = value)
+
+pop_edit$Year <- as.integer(pop_edit$Year)
+```
+
+With the population data sufficiently clean, created a new data frame with new rows showing borough by year and then merged it with the pop_clean data set for the relevant period (2000-2023)
+
+```{r}
+annual_population <- data.frame(Year=rep(2000:2023, each = length(unique(pop_edit$Borough))),
+Borough = rep(unique(pop_edit$Borough), times= length(2000:2023)))
+
+merged_data <- annual_population %>%
+  left_join(pop_edit, by = c("Borough", "Year"))
+```
+
+Using the approx() method, approximated intervening population by year for each respective borough, rounded off values to the right of the decimal point. Trimmed data to include only those variables to be used in analysis.
+
+```{r echo=TRUE}
+merged_final <- merged_data %>%
+  group_by(Borough) %>%
+  mutate(Population = approx(Year, Population, Year, rule = 2)$y) %>%
+  ungroup()
+
+merged_final$Population <- round(merged_final$Population)
+
+nyc_trim <- nyc_edit %>%
+  select('OCCUR_DATE', 'BORO', 'STATISTICAL_MURDER_FLAG')
+
+nyc_trim <- nyc_trim %>%
+  mutate(year = lubridate::year(OCCUR_DATE)) %>%
+  group_by(year,  BORO, STATISTICAL_MURDER_FLAG)%>%
+  summarise(count = n(), .groups = "drop") %>%
+  pivot_wider(names_from = STATISTICAL_MURDER_FLAG, values_from = count, values_fill = list(count = 0))  %>%
+  rename("Borough" = "BORO", "Year" = "year")
+
+```
+
+Made Borough nomenclature compatible, joined shooting data with population data.
+
+```{r}
+years_actual <- unique(nyc_trim$Year)
+merged_actual <- merged_final %>% filter(Year %in% years_actual)
+
+merged_actual$Borough <- toupper(merged_actual$Borough)
+
+nyc_merged <- nyc_trim %>%
+  left_join(merged_actual, by = c("Year", "Borough"))
+head(nyc_merged)
+```
+The columns and variable above represent shootings, homicides and population by borough for each year during the selected period.  With our data now in the appropriate format, we move on to visualization and analysis.
+
+**Visualizing the Data**
+
+We then visualize the data to see respective population data for the given period.  While this data itself can be analyzed in significant further detail, for purposes of this discussion it is sufficient to say there is not evidence of any borough having any substantial increase in population as compared to the other four.
+
+```{r}
+ggplot(nyc_merged, aes(x=Year, y=Population, color = Borough, group = Borough)) +
+  geom_line() +
+  labs(title = "Annual Population",
+       x = "Year",
+       y = "Population") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=45, hjust = 1))
+```
+
+While a more in-depth project could certainly unpack the data above in a more meaningful way, for purposes of our current investigation it's reasonable to say that population data for Staten Island was relatively flat for the period of the data, with the other four boroughs seeing population changing at roughly the same rate.
+
+We note the count of annual homicides by borough as follows.
+
+```{r}
+nyc_hom <- nyc_merged %>%
+  select("Year", "Borough", "true", "Population") %>%
+  rename("Homicides" = "true")
+
+viz_one <- nyc_hom %>%
+  group_by(Year, Borough) %>%
+  summarise(Homicides = sum(Homicides, na.rm = TRUE))
+
+ggplot(viz_one, aes(x=Year, y=Homicides, color = Borough, group = Borough)) +
+  geom_line() +
+  labs(title = "Annual Homicides by Borough",
+       x = "Year",
+       y = "Homicides") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=45, hjust = 1))
+```
+
+Then we calculate the rate of homicide per 100k people and add a column reflecting this value by row. This allows us to determine the true rate of homicide in each of the respective boroughs. 
+
+```{r}
+nyc_hom <- nyc_hom %>%
+  mutate("Homicide_Rate" = (Homicides/Population) *100000)
+nyc_hom$Homicide_Rate <- as.numeric(nyc_hom$Homicide_Rate)
+
+ggplot(nyc_hom, aes(x=Year, y=Homicide_Rate, color = Borough, group = Borough)) +
+  geom_line() +
+  labs(title = "Homicide Rate Per 100,000 Residents",
+       x = "Year",
+       y = "Homicides") +
+
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=45, hjust = 1))
+
+```
+
+This visualization helps distinguish murder total from overall murder rate.  Where previously Brooklyn had seemed to be the most affected by homicide overall, the plot above allows to see the Bronx as having the highest rate of murder per capita.  Further, we note that where all five boroughs saw a spike in the murder rate coincident with the initial outbreak of Covid-19, the upward trend continued for the Bronx, Manhattan and Queens during the subsequent period.  In the event one were attempting to generate true answer regarding the proximate cause of a spike in the murder rate, this part of the data would be a reasonable place to investigate further.
+
+For purposes of this assigment, we model the citywide data to determine whether homicide rate has any linear relationship with overall population.
+
+```{r}
+ggplot(nyc_hom, aes(x = Homicide_Rate, y = Population)) +
+  geom_point() +  
+  geom_smooth(method = "lm", se = FALSE, color = "red") +  
+  labs(title = "Population vs. Homicide Rate", 
+       x = "Population", 
+       y = "Homicide Rate")
+
+```
+```{r}
+model_c <- nyc_hom %>%
+  lm(Population ~ Homicide_Rate, data = .)
+
+summary(model_c)
+```
+**Modeling the Data**
+
+Modeling for the entire city, we see that the the data are segmented very cleanly into five clusters representing the individual boroughs, with the visualization not indicating any real linear relationship between the two variables.  Reviewing the summary data for the model, the p-value is high enough that any acceptable test of significance would not allow for the conclusion that the two variables have any meaningful statistical relationship when consider on the scale of the entire city.  
+
+Further exploring the two variables, we then model the data for one borough (Brooklyn) to determine whether there is any statistically significant relationship between these two variables when examined in this context.  
+
+```{r}
+nyc_hom %>%
+  filter(Borough == "BROOKLYN") %>%
+  ggplot(aes(x = Homicide_Rate, y = Population)) +
+  geom_point() +  
+  geom_smooth(method = "lm", se = FALSE, color = "red") +  
+  labs(title = "Homicide Rate & Its Effect on Population (Brooklyn)", 
+       x = "Homicide Rate", 
+       y = "Population")
+```
+
+```{r}
+model_yi <- nyc_hom %>%
+  filter(Borough == "BROOKLYN") %>%
+  lm(Population ~ Homicide_Rate, data = .)
+
+summary(model_yi)
+```
+We see from these models that there does appear to be a statistically significant relationship between homicide rate and population; specifically, population is negatively correlated with homicide rate, wherein population decreases by ~21k people for every incident of homicide.  While the regression line doesn't reasonably model the data, this visualization could serve as the basis for adding additional, borough-specific variables that might aid in fitting the model to the data in a more useful way and providing basis for more meaningful predictions.  
+
+Further, if we define the null hypothesis as being that the rate of homicide has no effect on population, the p-value (0.000743) says that it would be nearly impossible to observe data as extreme as the provided shooting data set in the event that there is no relationship between these two variables.  Hence, we conclude that there is an observable negative correlation between population and homicide rate
+
+**Conclusion**
+
+Clearly, the agenda stated in my introduction was far, far too ambitious to be sorted out in any exhaustive way given the scope of this assignment.  However, the statistical relationship between population and homicide rate at the borough level is significant enough that it could be a reasonable basis for further exploration of the data.  An example of a second set of steps might be to explore so-called "gentrification" and its impact on population/homicide rate.
+
+As outlined in the lectures, the next steps in this case would reasonably be to determine additional relevant variables, import additional data as necessary and create additional models (time series, et al.) to further investigate this observed statistical relationship.  In so doing, one could investigate neighborhood/precict data to determine whether it was possible to make predictions regarding homicide in a manner that, hopefully, would be above the sort of wide-scale public reproach referenced above.       
+
+**Bias**
+
+To the extent that I'm able to name my own bias, in the case of the analysis above I would submit that my strategy was significantly informed by my own awareness of bias and its effects.  New York City is a well-educated, well-informed population with a collective eye for injustice; indeed, prior attempts to deploy policing resources based on statistics caused massive uproar and reinforced the perception of a racially biased police department.  While not an especially scientific consideration, the perception of the police department by the city it protects is significant and can be the source of very real distraction to the department's effort to prevent crime. 
+
+It's quite possible that use of race data is objectively useful when attempting to build predictive models.  However, given NYC's history over the last several decades, it's reasonable to expect that any new policing policy will be noticed and its methods questioned by the population at large; to this extent, it makes sense to anticipate this and tailor data methods to remove the perception of bias by the state.  Again, none of the analysis above proves/disproves that such an approach is effective or even possible, but the hope is that new data tools available to policymakers will allow the city to make policing more efficient without the political fallout that accompanied previous initiatives.
+
+
+```{r}
+sessionInfo()
+```
+
+
+
