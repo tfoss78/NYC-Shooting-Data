@@ -20,14 +20,9 @@ Import packages for data cleaning and analysis.
 
 ```{r}
 library(tidyverse)
-library(tibble)
 library(dplyr)
 library(lubridate)
 library(knitr)
-library(forcats)
-library(stringr)
-library(purrr)
-library(readr)
 library(ggplot2)
 
 ```
